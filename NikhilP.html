@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>SeismoGuard V2</title>
+
+<link rel="stylesheet" href="https://unpkg.com/leaflet/dist/leaflet.css">
+<script src="https://unpkg.com/leaflet/dist/leaflet.js"></script>
+<script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+
+<style>
+  body {
+    background: #0f172a;
+    color: #fff;
+    font-family: Segoe UI, sans-serif;
+    margin: 0;
+    padding: 20px;
+  }
+
+  h1, h2 {
+    text-align: center;
+  }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+    gap: 12px;
+  }
+
+  .card {
+    background: #1e293b;
+    padding: 15px;
+    border-radius: 12px;
+  }
+
+  .card h3 {
+    margin-top: 0;
+    color: #94a3b8;
+  }
+
+  .card p {
+    font-size: 1.2rem;
+    font-weight: bold;
+  }
+
+  #map {
+    height: 400px;
+    margin-top: 15px;
+    border-radius: 12px;
+  }
+
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin-top: 10px;
+  }
+
+  th, td {
+    border: 1px solid #334155;
+    padding: 8px;
+    text-align: center;
+  }
+
+  th {
+    background: #1e293b;
+  }
+
+  input, button {
+    padding: 8px;
+    margin: 5px;
+  }
+
+  #alertBox {
+    display: none;
+    background: #ef4444;
+    padding: 15px;
+    border-radius: 12px;
+    margin: 15px 0;
+    font-weight: bold;
+    font-size: 1.2rem;
+    text-align: center;
+  }
+
+  #clock {
+    text-align: center;
+    margin-bottom: 15px;
+    color: #94a3b8;
+  }
+
+  #searchBox {
+    background: #1e293b;
+    color: #fff;
+    border: 1px solid #334155;
+    border-radius: 6px;
+  }
+
+  button {
+    background: #3b82f6;
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    cursor: pointer;
+  }
+
+  button:hover {
+    background: #2563eb;
+  }
+
+  canvas {
+    margin-top: 20px;
+    background: #1e293b;
+    border-radius: 12px;
+    padding: 10px;
+  }
+</style>
+</head>
+
+<body>
+
+<h1>🌍 SeismoGuard V2</h1>
+<div id="clock"></div>
+
+<div class="grid">
+  <div class="card"><h3>Status</h3><p id="status">-</p></div>
+  <div class="card"><h3>Vibration</h3><p id="vibration">-</p></div>
+  <div class="card"><h3>Latitude</h3><p id="lat">-</p></div>
+  <div class="card"><h3>Longitude</h3><p id="lng">-</p></div>
+  <div class="card"><h3>GPS Status</h3><p id="gpsStatus">-</p></div>
+  <div class="card"><h3>GSM Status</h3><p id="gsmStatus">-</p></div>
+  <div class="card"><h3>Satellites</h3><p id="satellites">-</p></div>
+  <div class="card"><h3>Total Alerts</h3><p id="totalAlerts">0</p></div>
+  <div class="card"><h3>Last Alert</h3><p id="lastAlert">None</p></div>
+</div>
+
+<div id="alertBox">🚨 EARTHQUAKE DETECTED 🚨</div>
+
+<div id="map"></div>
+
+<h2>Alert History</h2>
+<input id="searchBox" placeholder="Search" oninput="filterTable(this.value)">
+<button onclick="downloadCSV()">Download CSV</button>
+
+<table id="historyTable">
+  <thead>
+    <tr>
+      <th>ID</th>
+      <th>Status</th>
+      <th>Time</th>
+      <th>Latitude</th>
+      <th>Longitude</th>
+    </tr>
+  </thead>
+  <tbody></tbody>
+</table>
+
+<canvas id="alertChart"></canvas>
+
+<script type="module">
+  import { initializeApp } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-app.js";
+  import { getDatabase, ref, onValue } from "https://www.gstatic.com/firebasejs/12.15.0/firebase-database.js";
+
+  const firebaseConfig = {
+    apiKey: "AIzaSyAAr_UDfLZvXCrDn9sTsGHzH0YQsivfMSs",
+    authDomain: "earthquake-alert-system-10c46.firebaseapp.com",
+    databaseURL: "https://earthquake-alert-system-10c46-default-rtdb.asia-southeast1.firebasedatabase.app",
+    projectId: "earthquake-alert-system-10c46",
+    storageBucket: "earthquake-alert-system-10c46.firebasestorage.app",
+    messagingSenderId: "982734447045",
+    appId: "1:982734447045:web:764ebce646a11ecefaebac",
+    measurementId: "G-FNH76XGXW2"
+  };
+
+  const app = initializeApp(firebaseConfig);
+  const db = getDatabase(app);
+
+  setInterval(() => {
+    document.getElementById("clock").innerText = new Date().toLocaleString();
+  }, 1000);
+
+  const map = L.map("map").setView([16.5062, 80.6480], 10);
+
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    maxZoom: 19,
+    attribution: "&copy; OpenStreetMap"
+  }).addTo(map);
+
+  const marker = L.marker([16.5062, 80.6480]).addTo(map);
+
+  const chart = new Chart(document.getElementById("alertChart"), {
+    type: "line",
+    data: {
+      labels: [],
+      datasets: [{
+        label: "Alerts Over Time",
+        data: [],
+        borderColor: "#ef4444",
+        backgroundColor: "rgba(239, 68, 68, 0.2)",
+        tension: 0.3,
+        fill: true
+      }]
+    },
+    options: {
+      responsive: true,
+      scales: {
+        y: {
+          beginAtZero: true,
+          ticks: {
+            precision: 0,
+            color: "#fff"
+          }
+        },
+        x: {
+          ticks: {
+            color: "#fff"
+          }
+        }
+      },
+      plugins: {
+        legend: {
+          labels: {
+            color: "#fff"
+          }
+        }
+      }
+    }
+  });
+
+  const tbody = document.querySelector("#historyTable tbody");
+
+  onValue(ref(db, "earthquake"), snapshot => {
+    const data = snapshot.val();
+    if (!data) return;
+
+    document.getElementById("status").innerText = data.status ?? "-";
+    document.getElementById("vibration").innerText = data.vibration == 1 ? "Detected" : "Not Detected";
+    document.getElementById("lat").innerText = data.latitude ?? "-";
+    document.getElementById("lng").innerText = data.longitude ?? "-";
+    document.getElementById("gpsStatus").innerText = data.gps_status ?? "-";
+    document.getElementById("gsmStatus").innerText = data.gsm_status ?? "-";
+    document.getElementById("satellites").innerText = data.satellites ?? "-";
+
+    if (data.alerts !== undefined) {
+      document.getElementById("totalAlerts").innerText = data.alerts;
+    }
+
+    if (data.latitude && data.longitude) {
+      marker.setLatLng([data.latitude, data.longitude]);
+      map.setView([data.latitude, data.longitude], 10);
+    }
+
+    if (data.vibration == 1 || data.status === "ALERT") {
+      document.getElementById("alertBox").style.display = "block";
+    } else {
+      document.getElementById("alertBox").style.display = "none";
+    }
+  });
+
+  onValue(ref(db, "history"), snapshot => {
+    const history = snapshot.val();
+
+    tbody.innerHTML = "";
+    chart.data.labels = [];
+    chart.data.datasets[0].data = [];
+
+    if (!history) {
+      document.getElementById("totalAlerts").innerText = "0";
+      document.getElementById("lastAlert").innerText = "None";
+      chart.update();
+      return;
+    }
+
+    const alerts = Object.entries(history).map(([key, value]) => ({
+      id: key,
+      ...value
+    }));
+
+    alerts.sort((a, b) => {
+      return new Date(a.timestamp) - new Date(b.timestamp);
+    });
+
+    alerts.forEach((alert, index) => {
+      const row = tbody.insertRow();
+
+      row.innerHTML = `
+        <td>${alert.id}</td>
+        <td>${alert.status ?? "-"}</td>
+        <td>${alert.timestamp ?? "-"}</td>
+        <td>${alert.latitude ?? "-"}</td>
+        <td>${alert.longitude ?? "-"}</td>
+      `;
+
+      chart.data.labels.push(alert.timestamp ?? alert.id);
+      chart.data.datasets[0].data.push(index + 1);
+    });
+
+    document.getElementById("totalAlerts").innerText = alerts.length;
+
+    const lastAlert = alerts[alerts.length - 1];
+    document.getElementById("lastAlert").innerText = lastAlert?.timestamp ?? "None";
+
+    chart.update();
+  });
+
+  window.downloadCSV = function () {
+    const rows = [...document.querySelectorAll("#historyTable tr")]
+      .map(row => [...row.children].map(cell => `"${cell.innerText}"`).join(","));
+
+    const blob = new Blob([rows.join("\n")], { type: "text/csv" });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = "earthquake_alert_history.csv";
+    link.click();
+
+    URL.revokeObjectURL(url);
+  };
+
+  window.filterTable = function (query) {
+    [...tbody.rows].forEach(row => {
+      row.style.display = row.innerText.toLowerCase().includes(query.toLowerCase()) ? "" : "none";
+    });
+  };
+</script>
+
+</body>
+</html>
